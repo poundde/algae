@@ -14,7 +14,7 @@ from collections import deque
 
 from .config import Config, Tier
 from . import prompts, utils, reminders, moderation, services
-from .agent import Deps, add_message_details
+from .agent import Deps, add_message_details, creation
 from .history import Message, adapter, Automation
 
 logger = logging.getLogger(__name__)
@@ -70,14 +70,12 @@ class CoralBot(discord.Client):
                 prompt: What you want to tell me.
                 priority: Set to `asap` to let me know as soon as possible, or `when_idle` to let me know once I've finished my task.
             """
-            blocked, _ = moderation.is_blocked(self.engine, interaction.user.id)
-            allowed, _ = self._may_chat(interaction.user)
-            if blocked or not allowed:
-                return await interaction.response.send_message("You can't do that!", ephemeral=True)
             entry = self.active_runs.get(interaction.channel.id)
-            if priority not in ('asap', 'when_idle'): priority = 'asap'
-            if entry and entry['run'].enqueue(f"{interaction.user.name} (add-on to previous request): {prompt}", priority=priority):
-                await interaction.response.send_message(f"> {prompt}\n> -# by {interaction.user.mention}\n\nThanks, I've seen your request and I'm now including it.")
+            if entry and entry.get('owner_id') != interaction.user.id:
+                return await interaction.response.send_message("You can't do that!", ephemeral=True)
+            
+            if self._guide(interaction.channel.id, interaction.user.id, interaction.user.name, prompt, priority):
+                await interaction.response.send_message(f"> {prompt}\n> -# by {interaction.user.mention}\n\n👍")
             else:
                 await interaction.response.send_message("There's nothing to guide me on right now. Try asking me to start a longer task, perhaps.", ephemeral=True)
 
@@ -131,36 +129,33 @@ class CoralBot(discord.Client):
         hits.append(now)
         return False
 
+    async def _is_reply2bot(self, message: discord.Message) -> bool:
+        if not message.reference or not message.reference.message_id:
+            return False
+        ref = message.reference.resolved
+        if ref is None:
+            try: ref = await message.channel.fetch_message(message.reference.message_id)
+            except Exception: ref = None
+        return bool(ref and isinstance(ref, discord.Message) and ref.author.id == self.user.id)
+
+    def _guide(self, channel_id: int, author_id: int, author_name: str, text: str, priority: Literal['asap', 'when_idle'] = 'asap') -> bool:
+        entry = self.active_runs.get(channel_id)
+        if not entry or entry.get('owner_id') != author_id:
+            return False
+        if priority not in ('asap', 'when_idle'): priority = 'asap'
+        return entry['run'].enqueue(f"{author_name} (add-on to previous request): {text}", priority=priority)
+
     async def enqueue_guide(self, message: discord.Message, entry: ActiveRun, priority: Literal['asap', 'when_idle'] = 'asap') -> bool:
         text = utils.clean(message).removeprefix(self.config.DISCORD_PREFIX)
-        if priority not in ('asap', 'when_idle'): priority = 'asap'
-        if not entry['run'].enqueue(f"{message.author.name} (add-on to previous request): {text}", priority=priority):
+        if not self._guide(message.channel.id, message.author.id, message.author.name, text, priority):
             return False
+        
         entry['message'] = message
-        try:
-            await message.add_reaction('👍')
+        try: await message.add_reaction('👍')
         except Exception: pass
         return True
 
     async def try_guide(self, message: discord.Message) -> bool:
-        entry = self.active_runs.get(message.channel.id)
-        if not entry or not message.reference or not message.reference.message_id:
-            return False
-
-        ref_msg = message.reference.resolved
-
-        if ref_msg is None:
-            try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
-            except Exception:
-                ref_msg = None
-
-        if not ref_msg or not isinstance(ref_msg, discord.Message) or ref_msg.author.id != self.user.id:
-            return False
-
-        return await self.enqueue_guide(message, entry)
-
-    async def guide_same_author(self, message: discord.Message) -> bool:
         entry = self.active_runs.get(message.channel.id)
         if not entry or entry.get('owner_id') != message.author.id:
             return False
@@ -261,20 +256,16 @@ class CoralBot(discord.Client):
         if not allowed:
             return
 
+        addressed = (message.guild is None) or (self.user in message.mentions) or message.content.startswith(self.config.DISCORD_PREFIX) or await self._is_reply2bot(message)
+        if not addressed:
+            return
+
         if await self.try_guide(message):
             return
 
-        if (self.user not in message.mentions and not message.content.startswith(self.config.DISCORD_PREFIX)):
-            return
-
-        if await self.guide_same_author(message):
-            return
-
         if self._rate_limited(message.author.id, tier):
-            try:
-                await message.add_reaction('⏰')
-            except Exception:
-                pass
+            try: await message.add_reaction('⏰')
+            except Exception: ...
 
             return
         
@@ -290,7 +281,7 @@ class CoralBot(discord.Client):
 
         parts = [
             add_message_details(message),
-            message.author.name + ": " + utils.clean(message).removeprefix(self.config.DISCORD_PREFIX),
+            message.author.name + f" ({message.created_at:%Y-%m-%d %H:%M UTC})" + ": " + utils.clean(message).removeprefix(self.config.DISCORD_PREFIX),
         ]
 
         await self._respond_in_channel(message.channel, parts, tier=tier, author=author, message=message, extra_logs=extra_logs, footer=True)
@@ -337,7 +328,8 @@ class CoralBot(discord.Client):
                         tier=tier, 
                         scheduler=self.scheduler,
                         author_id=getattr(author, 'id', None),
-                        guild_id=getattr(guild, 'id', None)
+                        guild_id=getattr(guild, 'id', None),
+                        channel=channel,
                     )
 
                     try:
@@ -346,6 +338,7 @@ class CoralBot(discord.Client):
                             deps            = deps,
                             model           = self.model,
                             message_history = history,
+                            capabilities    = creation.store.load_active(),
                         ) as run:
                             self.active_runs[channel.id] = {'run': run, 'message': message, 'owner_id': getattr(author, 'id', None)}
                             async for node in run: ...
@@ -355,7 +348,7 @@ class CoralBot(discord.Client):
                         entry = self.active_runs.pop(channel.id, None)
                         if entry: reply_target = entry['message']
 
-                    response = result.output
+                    response = utils.strip_thinking(result.output) or '🫩'
 
                     with Session(self.engine) as session:
                         session.exec(delete(Message).where(Message.channel_id == channel.id))
@@ -435,6 +428,9 @@ A **critical exception** occured in my main thread.
 
                     if tools:
                         info.append(f"Tools called: {len(tools)} - {', '.join(tool.tool_name for tool in tools)}")
+
+                if footer and deps and (cu := deps.context_usage) and cu.fraction > 0.70:
+                    info.append(f"Context: {round(cu.used_tokens / 1000, 1)}k/{round(cu.window_tokens / 1000)}k ({cu.fraction * 100:.1f}%)")
 
                 if footer and info:
                     response += f"\n\n" + '\n'.join(f"-# {msg}" for msg in info)

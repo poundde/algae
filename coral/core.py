@@ -7,6 +7,7 @@ from .config import load_config
 from .bot import CoralBot
 from .history import init_db
 from .agent import agent
+from .model import build_model
 from . import log
 
 logger = logging.getLogger(__name__)
@@ -18,37 +19,7 @@ def main():
 
     config = load_config()
 
-    from pydantic_ai import ModelSettings
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.openai import OpenAIProvider
-    from pydantic_ai.models.anthropic import AnthropicModel
-    from pydantic_ai.providers.anthropic import AnthropicProvider
-
-    if config.AI_OPENAI_COMPATIBLE_BASE_URL:
-        model = OpenAIChatModel(
-            config.AI_MODEL_NAME,
-            provider = OpenAIProvider(
-                base_url = config.AI_OPENAI_COMPATIBLE_BASE_URL,
-                api_key  = config.AI_API_KEY or os.getenv('AI_API_KEY') or os.getenv('OPENAI_API_KEY') or 'X', # some APIs are keyless
-            ),
-            settings = config.AI_EXTRA_CONFIG,
-        )
-    elif config.AI_ANTHROPIC_COMPATIBLE_BASE_URL:
-        model = AnthropicModel(
-            config.AI_MODEL_NAME,
-            provider = AnthropicProvider(
-                base_url = config.AI_ANTHROPIC_COMPATIBLE_BASE_URL,
-                api_key  = config.AI_API_KEY or os.getenv('AI_API_KEY') or os.getenv('ANTHROPIC_API_KEY') or os.getenv('OPENAI_API_KEY') or 'X',
-            ),
-            settings = config.AI_EXTRA_CONFIG,
-        )
-    else:
-        model = config.AI_MODEL_NAME
-        # google-gla:gemini-flash-latest -> GOOGLE_API_KEY
-        # xai:grok-4-1-fast-non-reasoning -> XAI_API_KEY
-        # openai:gpt-5.2 -> OPENAI_API_KEY
-
-        os.environ[model.split(':')[0].split('-')[0].upper() + '_API_KEY'] = config.AI_API_KEY
+    model = build_model(config)
 
     engine = init_db(config.DB_PATH)
 

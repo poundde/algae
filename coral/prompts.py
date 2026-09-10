@@ -1,14 +1,9 @@
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
-from datetime import datetime, timezone
-
-from .utils import now
 
 env = Environment(
     loader=FileSystemLoader("."),
     undefined=StrictUndefined,
 )
-
-env.globals["now"] = now
 
 CONTENT_SUMMARIZATION_PROMPT = env.from_string("""
 You are an AI system specialized in analyzing user‑provided files of various types
@@ -75,6 +70,8 @@ There is also a `reminders.db` file, you should prefer not to interact with this
 
 For automations, you can read /workspace/automations/{service-name}.log to view an automation's logs.
 
+The `/workspace/capabilities` subdirectory would contain capabilities you have authored; use the `list_authored_capabilities` and other authored capability tools for more information.
+
 There is also a `services` directory; these are your "services", or long-running scripts that you can write and configure to run on boot (think of it as a 'systemd'-lite kinda thing).
 
 You can use your tools to manage services, and write services with YAML manifests. Here is an example:
@@ -89,10 +86,6 @@ autorestart: true
 ```
 
 You can also schedule automations to run based on discord.py events or at set time intervals // at a specific time. You can even use crontab strings.
-
-The current date and time (UTC) is:
-
-{{ now().strftime('%Y-%m-%d %H:%M:%S UTC') }}
 
 {% if config.AI_EXTRA_CONTEXT_PATH %}
                                 

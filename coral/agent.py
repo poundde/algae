@@ -2,9 +2,12 @@ import pydantic_ai
 import pydantic_core
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import PrepareTools, Thinking, WebSearch, WebFetch, Hooks
-from pydantic_ai_harness import Coder, Memory, ToolGuardrail, GuardrailResult, TieredCompaction, ClearToolResults, SummarizingCompaction, ClampOversizedMessages, ReportContextUsage
+from pydantic_ai_harness import Coder, Memory, ToolGuardrail, GuardrailResult, TieredCompaction, ClearToolResults, SummarizingCompaction, ClampOversizedMessages, ReportContextUsage, DeduplicateFileReads, PromptInjectionDefender, CapabilityCreation, PydanticAIDocs
 from pydantic_ai_harness.guardrails import ToolCallInfo
 from pydantic_ai_harness.memory import FileStore
+from pydantic_ai_harness.memory._toolset import list_subfiles
+from pydantic_ai_harness.compaction import ContextUsageEvent
+from pydantic_ai_harness.capability_creation._capability import _DEFAULT_GUIDANCE
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.models import Model
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
@@ -26,6 +29,7 @@ import httpx
 import logging
 import json
 import re
+import time
 
 from . import config as libcfg, prompts, reminders, moderation, utils
 
@@ -41,6 +45,7 @@ MAX_RETRIES = 3
 class Deps:
     model: Model | str
     message: discord.Message = None
+    channel: discord.abc.Messageable = None
     client: discord.Client = None
     config: libcfg.Config = None
     is_message: bool = True
@@ -51,12 +56,13 @@ class Deps:
     guild_id: Optional[int] = None
     attached_files: list[str] = dataclasses.field(default_factory=list)
     status_message: Optional[discord.Message] = None
+    context_usage: Optional[ContextUsageEvent] = None
 
 async def denial_reason(ctx: RunContext[Deps], tool_name: str) -> str | None:
     tier: libcfg.Tier = getattr(ctx.deps, 'tier', None)
     if tier is None:
         return None
-    return None if tier.can_use_tool(tool_name) else f"The user does not have permission to use tool {tool_name}."
+    return None if tier.can_use_tool(tool_name) else f"The user does not have permission to use tool {tool_name}. This is usually because the user's permission tier is not high enough to grant access to this tool."
 
 async def annotate_unavailable_tools(ctx: RunContext[Deps], tools: list[ToolDefinition]) -> list[ToolDefinition]:
     res = []
@@ -76,6 +82,9 @@ async def block_unauthorized(ctx: RunContext[Deps], call: ToolCallInfo) -> Guard
         logger.warning("Agent attempted to call blocked tool %s; denying.", call.name)
         return GuardrailResult.block(f"Tool unavailable: {reason}")
     return GuardrailResult.allow()
+
+def log_injection(ctx: RunContext[Deps], call: ToolCallPart, verdict) -> None:
+    logger.warning("Prompt-injection defender flagged %s (risk=%s): %s", call.tool_name, getattr(verdict, 'risk_level', '?'), getattr(verdict, 'detections', None))
 
 hooks = Hooks()
 
@@ -120,9 +129,31 @@ async def send_text_updates(ctx: RunContext[Deps], *, request_context, response)
     if any(isinstance(p, ToolCallPart) for p in parts):
         for part in parts:
             if isinstance(part, TextPart) and part.content.strip():
-                await ctx.deps.message.channel.send(part.content)
+                if stripped := utils.strip_thinking(part.content):
+                    await ctx.deps.message.channel.send(stripped)
 
     return response
+
+def _fk(call: ToolCallPart) -> str | None:
+    if call.tool_name != 'read_file':
+        return None
+    return call.args_as_dict().get('path')
+
+CAPABILITY_CREATION_GUIDANCE = _DEFAULT_GUIDANCE + f"""
+
+Before authoring or changing a capability, read the current docs instead of relying on memory.
+
+For core pydantic-ai APIs, call `read_pyai_docs(topic)` (topics: `capabilities`, `hooks`, `tools`, `tools-advanced`, `toolsets`, `agent`).
+For harness capabilities and anything else, use the `web_fetch` tool: fetch the docs index at "https://pydantic.dev/docs/ai/llms.txt" to find the right page, then fetch its markdown content by appending `/index.md` to the page path (e.g. "https://pydantic.dev/docs/ai/harness/capability-creation/index.md").
+Always fetch the `.md` / `index.md` form, not the browser-rendered HTML page instead.
+"""
+
+creation = CapabilityCreation(directory=Path('/workspace/capabilities'), guidance=CAPABILITY_CREATION_GUIDANCE)
+# defined outside the agent constructor so that it can be imported from `bot.py`
+
+def _memory_namespace(ctx: RunContext[Deps]) -> str: return str(ctx.deps.guild_id) if ctx.deps.guild_id else (str(ctx.deps.message.guild.id) if (ctx.deps.message and ctx.deps.message.guild) else 'global')
+
+memory_store = FileStore('/workspace/MEMORY')
 
 agent = Agent(
     deps_type = Deps,
@@ -130,27 +161,39 @@ agent = Agent(
         TieredCompaction(
             tiers = [
                 ClampOversizedMessages(40_000),
-                ClearToolResults(max_tokens=1, keep_pairs=5),
+                DeduplicateFileReads(_fk),
                 SummarizingCompaction(max_messages=1, keep_messages=25)
             ],
-            target_tokens = 200_000, # should be enough for 256k models
+            target_fraction = 0.9,
         ),
-        ReportContextUsage(on_usage = lambda u : logger.debug("Context: %s tok / %s window (resolved=%s, %.0f%%)", u.used_tokens, u.window_tokens, u.resolved, u.fraction * 100)),
+        ReportContextUsage(),
         PrepareTools(annotate_unavailable_tools),
         ToolGuardrail(guard=block_unauthorized),
+        PromptInjectionDefender(
+            block_high_risk = True,
+            on_detection = log_injection,
+        ),
         Thinking(),
         WebSearch(local='duckduckgo'),
         WebFetch(local=True),
+        PydanticAIDocs(),
+        creation,
         Coder(workspace='/workspace', allowed_commands=[]),
         Memory(
-            FileStore('/workspace/MEMORY'),
-            namespace = lambda ctx: str(ctx.deps.guild_id) if ctx.deps.guild_id else (str(ctx.deps.message.guild.id) if (ctx.deps.message and ctx.deps.message.guild) else 'global'),
+            memory_store,
+            namespace = _memory_namespace,
             heading = 'Agent Memory',
+            inject_memory = False,
         ),
         hooks,
     ],
     retries = 100,
 )
+
+@agent.on_event(ContextUsageEvent)
+async def report_context(ctx: RunContext[Deps], event: ContextUsageEvent):
+    logger.debug("Context: %s / %s (resolved=%s, %.1f%%)", event.used_tokens, event.window_tokens, event.resolved, event.fraction * 100)
+    ctx.deps.context_usage = event
 
 @agent.instructions
 def system_prompt(ctx: RunContext[Deps]):   
@@ -158,6 +201,104 @@ def system_prompt(ctx: RunContext[Deps]):
         return prompts.SYSTEM_PROMPT.render(client=ctx.deps.client, config=ctx.deps.config)
     
     return ''
+
+@agent.instructions
+async def memory_context(ctx: RunContext[Deps]):
+    scope = f"{_memory_namespace(ctx)}/main"
+    try:
+        f = await memory_store.read(f"{scope}/MEMORY.md", max_chars=8000)
+        subfiles, truncated = await list_subfiles(memory_store, scope, limit=50)
+    except Exception:
+        return ''
+
+    body = (f.content if f and f.content.strip() else '(empty)')
+    out = ["## Your memory (persistent notes from your previous sessions)", '', body]
+    if subfiles:
+        out += ['', "Other memory files (use `read_memory` or `search_memory`):", *[f"- {p}" for p in subfiles]]
+
+    return '\n'.join(out)
+
+_GUILD_CTX_CACHE: dict[int, tuple[float, str]] = {} # guild_id -> (time, context)
+_GUILD_CTX_TTL = 60.0 # cache bust after 60 secs
+_MAX_EMOJIS = 200
+_MAX_ROLES = 200
+
+def _guild_static_context(guild: discord.Guild) -> str:
+    hit = _GUILD_CTX_CACHE.get(guild.id)
+    if hit and time.monotonic() - hit[0] < _GUILD_CTX_TTL:
+        return hit[1]
+
+    lines: list[str] = []
+
+    emojis = list(guild.emojis)[:_MAX_EMOJIS]
+    if emojis:
+        lines.append("### Custom emojis (use these a lot if you want)")
+        for e in emojis:
+            code = f"<a:{e.name}:{e.id}>" if e.animated else f"<:{e.name}:{e.id}>"
+            lines.append(f"- :{e.name}: -> `{code}`" + ('' if e.available else " (may be unavailable!)"))
+        if len(guild.emojis) > _MAX_EMOJIS:
+            lines.append(f"- ...and {len(guild.emojis) - _MAX_EMOJIS} more (omitted)")
+        lines.append('')
+
+    roles = [r for r in sorted(guild.roles, key=lambda r: r.position, reverse=True) if not r.is_default()][:_MAX_ROLES]
+    if roles:
+        lines.append("### Roles (in hierarchy order)")
+        for r in roles:
+            lines.append(f"- {r.name} ({len(r.members)} members) -> `<@&{r.id}>`")
+        lines.append('')
+
+    text = '\n'.join(lines)
+    _GUILD_CTX_CACHE[guild.id] = (time.monotonic(), text)
+    return text
+
+@agent.instructions
+async def dynamic_ctx(ctx: RunContext[Deps]):
+    msg = ctx.deps.message
+    channel = ctx.deps.channel or (msg.channel if msg else None)
+    guild = getattr(channel, 'guild', None) or (msg.guild if msg else None)
+
+    lines = ["# Live Context", '', f"Current Time: {utils.now().strftime('%Y-%m-%d %H:%M:%S UTC')} (this is not the time the session started, this is the time RIGHT NOW)"]
+
+    if channel is not None:
+        cid = getattr(channel, 'id', None)
+        cname = getattr(channel, 'name', None)
+        lines += ['', "## Current channel"]
+        if cname and cid: lines.append(f"You are in #{cname} (<#{cid}>).")
+        topic = getattr(channel, 'topic', None)
+        if topic: lines.append(f"Channel topic: {topic}")
+        if isinstance(channel, discord.Thread):
+            lines.append(f"This is a thread named '{channel.name}'.")
+            if channel.owner: lines.append(f"Thread started by @{channel.owner.name} (<@{channel.owner.id}>).")
+            elif channel.owner_id: lines.append(f"Thread started by <@{channel.owner_id}>.")
+
+            tags = [t.name for t in channel.applied_tags]
+            if tags: lines.append(f"Tags: {', '.join(tags)}")
+
+            parent = channel.parent
+            if isinstance(parent, discord.ForumChannel):
+                lines.append(f"Parent forum: #{parent.name} (<#{parent.id}>)" + (f" -- {parent.topic}" if parent.topic else ''))
+
+            try:
+                starter = await channel.fetch_message(channel.id)
+                if starter and starter.content:
+                    body = starter.content
+                    if len(body) > 1000:
+                        body = body[:1000] + '...'
+                    lines.append(f"Original post by {starter.author.name}:\n\n{body}")
+            except Exception: ...
+
+    if guild is not None:
+        lines += ['', '## Server',
+            f"{guild.name} (id `{guild.id}`, {guild.member_count} members). "
+            f"Your [nick]name here is `{guild.me.display_name if getattr(guild, 'me', None) else ctx.deps.client.user.name}`."
+        ]
+
+        static = _guild_static_context(guild)
+        if static:
+            lines += ['', static]
+
+    return '\n'.join(lines)
+
 
 def add_message_details(msg: discord.Message, indent=1):
     if not msg: return
@@ -448,7 +589,9 @@ async def analyse_file(ctx: RunContext[Deps], url: str, file_type: FileType, que
     - txt (plaintext .txt or .md files that you can read raw; this would return a summary of the content instead, or you can read it yourself)
 
     The url is the path to the file. It can either be a HTTP(S) URL to the file (useful for e.g. Discord CDN links), or
-    an absolute / relative file path. You can also simply pass `message`, and it will return summarizations for all the attachments on a message.
+    an absolute / relative file path. You can also simply pass `message`, and it will return summarizations for all the attachments on the latest message.
+    You can pass `discord://<channel_id>/<message_id>` to get for a specific message ID, or `discord://<message_id>` and it will auto detect the channel ID as the current channel.
+    `discord://message` also works.
 
     The query is the query to give the summarization model.
 
@@ -456,7 +599,7 @@ async def analyse_file(ctx: RunContext[Deps], url: str, file_type: FileType, que
     If you have a specific query, you will receive a brief summary as well as an answer to the query, e.g. "What colour is the man's shirt?".
     """
 
-    if url == 'message':
+    if url == 'message' or url == 'discord://message':
         msg = ctx.deps.message
         if not msg or not msg.attachments:
             return "No attachments found on the current message."
@@ -468,6 +611,34 @@ async def analyse_file(ctx: RunContext[Deps], url: str, file_type: FileType, que
             results.append(f"[{attachment.filename}]: {result}")
 
         return '\n\n'.join(results)
+
+    if url.startswith('discord://'):
+        url = url.removeprefix('discord://').removesuffix('/')
+       
+        if '/' in url:
+            cid, mid = url.split('/', 1)
+        else:
+            cid = ctx.deps.channel or (ctx.deps.message.channel if ctx.deps.message else None)
+            mid = url
+
+        try:
+            if isinstance(cid, str):
+                cid = ctx.deps.client.get_channel(int(cid)) if ctx.deps.client else (ctx.deps.channel or (ctx.deps.message.channel if ctx.deps.message else None))
+
+            message = await cid.fetch_message(mid)
+
+            if not message.attachments:
+                return f"Message {mid} has no attachments."
+
+            results = []
+            for attachment in message.attachments:
+                result = await analyse_file(ctx, attachment.url, FileType.from_mimetype(attachment.content_type) or file_type, query)
+                results.append(f"[{attachment.filename}]: {result}")
+
+            return '\n\n'.join(results)
+
+        except Exception as e:
+            return f"Failed to fetch message {mid} in channel {cid}: {e}"
 
     if url.startswith('http'):
         match file_type:
@@ -751,3 +922,36 @@ async def remove_service(ctx: RunContext[Deps], name: str) -> str:
     """Stop and permanently remove a service (deletes its manifest)."""
     sup = _sup(ctx)
     return await sup.remove(name) if sup else "Services are not available."
+
+@agent.tool()
+async def conversation_catchup(ctx: RunContext[Deps], limit: int = 20) -> str:
+    """
+    Read the last `limit` (default 20, max 100) messages in the CURRENT channel as markdown, so you can catch up on recent conversation.
+
+    This is better than `run_code` for reading chat history, because it is less verbose and more structured.
+
+    Messages with attachments include their message ID, so you can use that in `analyse_file` if you wish.
+    """
+
+    channel = ctx.deps.channel or (ctx.deps.message.channel if ctx.deps.message else None)
+    if channel is None: return "No available channel to read."
+
+    limit = max(1, min(limit, 100))
+    try:
+        msgs = [m async for m in channel.history(limit=limit)]
+    except Exception as e: return f"Failed to read channel history: {e}"
+
+    msgs.reverse()
+
+    out = []
+    for m in msgs:
+        ts = m.created_at.strftime('%Y-%m-%d %H:%M UTC')
+        head = f"**{m.author.display_name}** (`{m.author.id}`) · {ts} · message ID {m.id}"
+        if m.reference and m.reference.message_id:
+            head += f" · ↩ reply to `{m.reference.message_id}`"
+        content = utils.clean(m) if m.content else ''
+        out.append(f"{head}\n{content}" if content else head)
+        if m.attachments:
+            out.append("  attachments: " + ", ".join(a.filename for a in m.attachments))
+
+    return '\n\n'.join(out) if out else "No recent messages."

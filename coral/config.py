@@ -8,18 +8,17 @@ logger = logging.getLogger(__name__)
 TOOL_GROUPS = {
     'web':            ['duckduckgo_search', 'web_fetch'],
     'media':          ['analyse_file'],
-    'discord':        ['get_user_info'],
-    'discord:admin':  ['search_discord'], # this is in the `discord:admin` group as search_discord can access even hidden/private/admin channels which we don't always want to expose
+    'discord':        ['get_user_info', 'conversation_catchup'],
+    'discord:admin':  ['search_discord', 'write_memory', 'delete_memory'], # this is in the `discord:admin` group as search_discord can access even hidden/private/admin channels which we don't always want to expose
     'planning':       ['write_plan', 'read_plan', 'add_task', 'update_task_status', 'update_task_statuses', 'remove_task', 'add_subtask', 'set_dependency', 'get_available_tasks', 'delegate_task'],
     'coder':          [
                         'read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'find_files', 'create_directory', 'file_info', 'attach_file', # filesystem # attach file is here as it provides arbitrary file read (constrained to /workspace, but still file read of sensitive e.g. config.yaml)
                         'run_command', 'start_command', 'check_command', 'stop_command', 'run_shell', 'run_code', 'trigger_reboot', # code execution
                         'create_service', 'list_services', 'service_status', 'stop_service', 'restart_service', 'remove_service', # services
-                      ],
-    'memory':         [
+                        'author_capability', 'list_authored_capabilities', 'disable_authored_capability', 'read_pyai_docs', # capability writing
                         'set_automation', 'cancel_automation', 'list_automations', # automations
-                        'read_memory', 'write_memory', 'search_memory', 'delete_memory', # memory
                       ],
+    'memory':         ['read_memory', 'search_memory'],
     'moderation':     ['timeout_user', 'ban_user', 'unban_user', 'cancel_timeout'],
 }
 
@@ -62,6 +61,8 @@ class Tier(BaseModel):
     ratelimit: Optional[str] = '6/m'
 
     def can_use_tool(self, tool_name: str) -> bool:
+        if tool_name in ('read_tool_result',): return True # always allowed
+
         kanuze = False # kanuze = can use. get it? no? ok..
 
         for rule in self.allowed_tools:
@@ -90,6 +91,7 @@ class Config(BaseModel):
 
     AI_MODEL_NAME: str
     AI_API_KEY: Optional[str] = None
+    AI_OPENAI_RESPONSES_COMPATIBLE_BASE_URL: Optional[str] = None
     AI_OPENAI_COMPATIBLE_BASE_URL: Optional[str] = None
     AI_ANTHROPIC_COMPATIBLE_BASE_URL: Optional[str] = None
     AI_EXTRA_CONTEXT_PATH: str = 'config.md.j2'

@@ -128,6 +128,7 @@ def create(path: Path = typer.Argument(Path('.'))):
 
         AI_MODEL_NAME = 'google-gla:gemini-flash-latest',
         AI_API_KEY = "Put your API key here.",
+        AI_OPENAI_RESPONSES_COMPATIBLE_BASE_URL = None,
         AI_OPENAI_COMPATIBLE_BASE_URL = None,
         AI_ANTHROPIC_COMPATIBLE_BASE_URL = None,
         AI_EXTRA_CONTEXT_PATH = 'config.md.j2',

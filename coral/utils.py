@@ -10,6 +10,18 @@ logger = logging.getLogger(__name__)
 
 def now() -> datetime: return datetime.now(timezone.utc)
 
+_THINK_RE = re.compile(r'<think(?:ing)?>(.*?)</think(?:ing)?>', re.DOTALL | re.IGNORECASE)
+
+def strip_thinking(text: str) -> str:
+    if not text:
+        return text
+
+    def replace(match: re.Match) -> str:
+        content = match.group(1)
+        return '' if len(content) > 20 else match.group(0)
+
+    return _THINK_RE.sub(replace, text).strip()
+
 _CODEBLOCK = re.compile(r'```([\w+.\-]*)\n(.*?)```', re.DOTALL)
 _EXT_BY_LANG = {
     'python': 'py', 'py': 'py', 'js': 'js', 'javascript': 'js', 'ts': 'ts', 'typescript': 'ts',
@@ -115,7 +127,7 @@ def indent(text, spaces):
     prefix = " " * spaces
     return '\n'.join(prefix + line for line in text.splitlines())
 
-async def run_code(code: str, header: str, args: tuple, timeout: int) -> dict:
+async def run_code(code: str, header: str, args: tuple, timeout: int, quiet: bool = False) -> dict:
     warnings = []
     if not re.search(r'(?m)^' + re.escape(header), code):
         warnings.append(f"Your code didn't define `{header}` at the top level, so the system wrapped it for you.")
@@ -124,11 +136,13 @@ async def run_code(code: str, header: str, args: tuple, timeout: int) -> dict:
     ns = { '__builtins__': __builtins__ }
     out, err = StringIO(), StringIO()
 
-    logger.debug("Agent attempted to run code:")
-    logger.debug('\n' + code)
-    logger.debug("Running...")
+    if not quiet:
+        logger.debug("Agent attempted to run code:")
+        logger.debug('\n' + code)
+        logger.debug("Running...")
 
     stdout, stderr = '', ''
+    cwd = os.getcwd()
     try:
         with redirect_stdout(out), redirect_stderr(err):
             exec(code, ns)
@@ -137,17 +151,20 @@ async def run_code(code: str, header: str, args: tuple, timeout: int) -> dict:
         stdout = out.getvalue()
         stderr = err.getvalue()
 
-        logger.debug("Result: %s", result)
-        logger.debug(stdout + stderr)
+        if not quiet:
+            logger.debug("Result: %s", result)
+            logger.debug(stdout + stderr)
 
         return {'warnings': warnings, 'result': result, 'stdout': stdout, 'stderr': stderr}
     except asyncio.TimeoutError:
-        logger.debug("Execution timed out.")
+        logger.warning("Execution timed out.")
         return {'warnings': warnings, 'result': 'Execution timed out.', 'stdout': stdout, 'stderr': stderr}
     except Exception as e:
         import traceback
-        logger.debug(traceback.format_exc(), exc_info=e)
+        logger.warning(traceback.format_exc(), exc_info=e)
         return {'warnings': warnings, 'result': traceback.format_exc(), 'stdout': stdout, 'stderr': stderr}
+    finally:
+        os.chdir(cwd)
     
 
 def clean(message: discord.Message):

@@ -53,7 +53,7 @@ async def fire_automation(name: str, bot: 'CoralBot', action: Literal['code', 'p
             res = await utils.run_code(
                 code,
                 'async def main(event, discord, client):', (event_args, discord, bot),
-                timeout = 60,
+                timeout = 60, quiet = True,
             )
             if res.get('stderr') or (isinstance(res.get('result'), str) and 'Traceback' in res['result']):
                 logger.warning("Automation %s code error: %s\n%s", name, res.get('result'), res.get('stderr'))
