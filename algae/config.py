@@ -121,6 +121,6 @@ def load_config(path: str | Path = 'config.yaml') -> Config:
     path = Path(path)
 
     if not path.exists():
-        raise FileNotFoundError(f"'{path}' does not exist. Please created it and add the required fields. Quickstart: `coral create {path.parent}`")
+        raise FileNotFoundError(f"'{path}' does not exist. Please created it and add the required fields. Quickstart: `algae create {path.parent}`")
 
     return Config.model_validate(yaml.full_load(path.read_text()))

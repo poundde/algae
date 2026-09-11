@@ -1,27 +1,27 @@
-# coral
+# algae
 
-Coral is a deep AI agent, with a Discord integration.
+Algae is a deep AI agent, with a Discord integration.
 
 ## Installation
 
 ```
-$ gh repo clone uukelele/coral
-$ cd coral
+$ gh repo clone poundde/algae
+$ cd algae
 $ pip install -e . -U
 ```
 
 ### Updating
 
 ```
-$ cd coral
+$ cd algae
 $ git pull
 ```
 
 ## Usage
 
 ```
-$ coral create my-bot
+$ algae create my-bot
 $ cd my-bot
 $ # Edit the `config.yaml` and `config.md.j2` files in a text editor.
-$ coral run
+$ algae run
 ```

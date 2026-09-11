@@ -24,7 +24,7 @@ class ActiveRun(TypedDict):
     message: discord.Message
     owner_id: int
 
-class CoralBot(discord.Client):
+class AlgaeBot(discord.Client):
     def __init__(self, config: Config, agent: Agent, model: Model | str, engine: Engine, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -246,7 +246,7 @@ class CoralBot(discord.Client):
 
     async def on_message(self, message: discord.Message):
 
-        if message.author == self.user or message.author.bot: # let's not allow bots to talk to Coral
+        if message.author == self.user or message.author.bot: # let's not allow bots to talk to Algae
             return
 
         blocked, reason = moderation.is_blocked(self.engine, message.author.id)

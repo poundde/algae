@@ -15,15 +15,15 @@ from pathlib import Path
 from . import moderation, utils
 
 if typing.TYPE_CHECKING:
-    from .bot import CoralBot
+    from .bot import AlgaeBot
 
 logger = logging.getLogger(__name__)
 
 REMINDERS_DB = 'sqlite:////workspace/reminders.db'
 
-_bot: 'CoralBot' = None
+_bot: 'AlgaeBot' = None
 
-async def fire_automation(name: str, bot: 'CoralBot', action: Literal['code', 'prompt'], payload: str, channel_id: Optional[int], author_id: int, guild_id: Optional[int], event_args: tuple):
+async def fire_automation(name: str, bot: 'AlgaeBot', action: Literal['code', 'prompt'], payload: str, channel_id: Optional[int], author_id: int, guild_id: Optional[int], event_args: tuple):
     if moderation.is_blocked(bot.engine, author_id)[0]: return
 
     channel = bot.get_channel(channel_id) if channel_id else None

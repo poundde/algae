@@ -29,7 +29,7 @@ def main(
 def create_dockerfiles(path: Path = typer.Argument(Path('.')), force=False):
     path = path.resolve()
     if not (path / 'config.yaml').exists() and not force:
-        # typer.secho('`config.yaml` does not exist in this directory. Please run `coral create` first, or pass --force=True.', fg='yellow')
+        # typer.secho('`config.yaml` does not exist in this directory. Please run `algae create` first, or pass --force=True.', fg='yellow')
         return
 
     p_dockerfile = path / 'Dockerfile'
@@ -49,19 +49,19 @@ WORKDIR /workspace
 """
     if not from_source:
         dockerfile += """
-RUN pip install git+https://github.com/uukelele/coral.git
+RUN pip install git+https://github.com/uukelele/algae.git
 """
-    else: "Coral is installed at runtime from a mounted volume. This is for easier development."
+    else: "Algae is installed at runtime from a mounted volume. This is for easier development."
 
     dockerfile += """
-CMD ["python", "-m", "coral.core"]
+CMD ["python", "-m", "algae.core"]
 """
 
     compose = f"""
 services:
     bot:
         build: .
-        container_name: coral-{path.name.lower().replace(' ', '-')}
+        container_name: algae-{path.name.lower().replace(' ', '-')}
         restart: unless-stopped
         volumes:
             - .:/workspace
@@ -69,9 +69,9 @@ services:
     
     if from_source:
         compose += f"""
-            - {repo}:/opt/coral:ro
+            - {repo}:/opt/algae:ro
         
-        command: /bin/sh -c "mkdir -p /tmp/coral && cp -au /opt/coral/. /tmp/coral && pip install /tmp/coral && python -m coral.core"
+        command: /bin/sh -c "mkdir -p /tmp/algae && cp -au /opt/algae/. /tmp/algae && pip install /tmp/algae && python -m algae.core"
 """
         
     if not p_dockerfile.exists():
@@ -175,7 +175,7 @@ def clear(path: Path = typer.Argument(Path('.'))):
     parsed = urlparse(config.DB_PATH)
 
     if parsed.scheme != 'sqlite':
-        logger.error('The database is not a SQLite .db file. Coral cannot find the database path to clear.')
+        logger.error('The database is not a SQLite .db file. Algae cannot find the database path to clear.')
         raise typer.Exit(1)
 
     db_path: Path
@@ -211,7 +211,7 @@ def run(path: Path = typer.Argument(Path('.'))):
 
     create_dockerfiles(path)
 
-    logger.info("Booting Coral...")
+    logger.info("Booting Algae...")
     
     try:
         sp.run(['docker', 'compose', 'up', '--build'])

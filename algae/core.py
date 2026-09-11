@@ -4,7 +4,7 @@ import os
 import typer, logging
 
 from .config import load_config
-from .bot import CoralBot
+from .bot import AlgaeBot
 from .history import init_db
 from .agent import agent
 from .model import build_model
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def main():
     log.setup()
 
-    logger.info("Coral is initializing!")
+    logger.info("Algae is initializing!")
 
     config = load_config()
 
@@ -25,7 +25,7 @@ def main():
 
     intents = discord.Intents.all()
 
-    client = CoralBot(
+    client = AlgaeBot(
         config  = config,
         agent   = agent,
         model   = model,

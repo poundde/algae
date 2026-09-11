@@ -755,7 +755,7 @@ wheels = [
 ]
 
 [[package]]
-name = "coral"
+name = "algae"
 version = "0.4.1"
 source = { virtual = "." }
 dependencies = [
