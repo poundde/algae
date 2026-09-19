@@ -49,7 +49,7 @@ WORKDIR /workspace
 """
     if not from_source:
         dockerfile += """
-RUN pip install git+https://github.com/uukelele/algae.git
+RUN pip install git+https://github.com/poundde/algae.git
 """
     else: "Algae is installed at runtime from a mounted volume. This is for easier development."
 
